@@ -2404,6 +2404,8 @@ static inline boolean P_TagDamage(mobj_t *target, mobj_t *inflictor, mobj_t *sou
 	{
 		if (!(inflictor->flags & MF_FIRE))
 			P_GivePlayerRings(player, 1);
+		if (inflictor->flags2 & MF2_BOUNCERING)
+			inflictor->fuse = 1;
 		return false;
 	}
 
@@ -2489,6 +2491,8 @@ static inline boolean P_PlayerHitsPlayer(mobj_t *target, mobj_t *inflictor, mobj
 		{
 			if (!(inflictor->flags & MF_FIRE))
 				P_GivePlayerRings(target->player, 1);
+			if (inflictor->flags2 & MF2_BOUNCERING)
+				inflictor->fuse = 1;
 
 			return false;
 		}
@@ -2636,7 +2640,10 @@ void P_RemoveShield(player_t *player)
 		player->powers[pw_shield] = SH_NONE;
 		// Reset fireflower
 		if (!player->powers[pw_super])
+		{
 			player->mo->color = player->skincolor;
+			G_GhostAddColor(GHC_NORMAL);
+		}
 	}
 	else if ((player->powers[pw_shield] & SH_NOSTACK) == SH_BOMB) // Give them what's coming to them!
 	{
@@ -2858,6 +2865,13 @@ boolean P_DamageMobj(mobj_t *target, mobj_t *inflictor, mobj_t *source, INT32 da
 		}
 #endif
 	}
+#ifdef HAVE_BLUA
+	else if (target->flags & MF_ENEMY)
+	{
+		if (LUAh_MobjDamage(target, inflictor, source, damage) || P_MobjWasRemoved(target))
+			return true;
+	}
+#endif
 
 	player = target->player;
 
@@ -3023,7 +3037,8 @@ boolean P_DamageMobj(mobj_t *target, mobj_t *inflictor, mobj_t *source, INT32 da
 	}
 
 	// Killing dead. Just for kicks.
-	if (cv_killingdead.value && source && source->player && P_Random() < 80)
+	// Require source and inflictor be player.  Don't hurt for firing rings.
+	if (cv_killingdead.value && (source && source->player) && (inflictor && inflictor->player) && P_Random() < 80)
 		P_DamageMobj(source, target, target, 1);
 
 	// do the damage

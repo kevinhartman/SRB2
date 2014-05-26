@@ -30,14 +30,21 @@ void Got_Luacmd(UINT8 **cp, INT32 playernum)
 {
 	UINT8 i, argc, flags;
 	char buf[256];
-	I_Assert(gL != NULL);
+
+	// don't use I_Assert here, goto the deny code below
+	// to clean up and kick people who try nefarious exploits
+	// like sending random junk lua commands to crash the server
+
+	if (!gL) goto deny;
 	lua_getfield(gL, LUA_REGISTRYINDEX, "COM_Command"); // push COM_Command
-	I_Assert(lua_istable(gL, -1));
+	if (!lua_istable(gL, -1)) goto deny;
 
 	argc = READUINT8(*cp);
 	READSTRINGN(*cp, buf, 255);
+	strlwr(buf); // must lowercase buffer
 	lua_getfield(gL, -1, buf); // push command info table
-	I_Assert(lua_istable(gL, -1));
+	if (!lua_istable(gL, -1)) goto deny;
+
 	lua_remove(gL, -2); // pop COM_Command
 
 	lua_rawgeti(gL, -1, 2); // push flags from command info table
@@ -47,26 +54,16 @@ void Got_Luacmd(UINT8 **cp, INT32 playernum)
 		flags = (UINT8)lua_tointeger(gL, -1);
 	lua_pop(gL, 1); // pop flags
 
-	if (flags & 1 && playernum != serverplayer && playernum != adminplayer)
-	{
-		// not from server or remote admin, must be hacked/buggy client
-		CONS_Alert(CONS_WARNING, M_GetText("Illegal lua command received from %s\n"), player_names[playernum]);
-
-		lua_pop(gL, 1); // pop command info table
-
-		if (server)
-		{
-			XBOXSTATIC UINT8 bufn[2];
-
-			bufn[0] = (UINT8)playernum;
-			bufn[1] = KICK_MSG_CON_FAIL;
-			SendNetXCmd(XD_KICK, &bufn, 2);
-		}
-		return;
-	}
+	// requires server/admin and the player is not one of them
+	if ((flags & 1) && playernum != serverplayer && playernum != adminplayer)
+		goto deny;
 
 	lua_rawgeti(gL, -1, 1); // push function from command info table
-	I_Assert(lua_isfunction(gL, -1));
+
+	// although honestly this should be true anyway
+	// BUT GODDAMNIT I SAID NO I_ASSERTS SO NO I_ASSERTS IT IS
+	if (!lua_isfunction(gL, -1)) goto deny;
+
 	lua_remove(gL, -2); // pop command info table
 
 	LUA_PushUserdata(gL, &players[playernum], META_PLAYER);
@@ -76,10 +73,24 @@ void Got_Luacmd(UINT8 **cp, INT32 playernum)
 		lua_pushstring(gL, buf);
 	}
 	LUA_Call(gL, (int)argc); // argc is 1-based, so this will cover the player we passed too.
+	return;
+
+deny:
+	//must be hacked/buggy client
+	lua_settop(gL, 0); // clear stack
+	CONS_Alert(CONS_WARNING, M_GetText("Illegal lua command received from %s\n"), player_names[playernum]);
+	if (server)
+	{
+		XBOXSTATIC UINT8 bufn[2];
+
+		bufn[0] = (UINT8)playernum;
+		bufn[1] = KICK_MSG_CON_FAIL;
+		SendNetXCmd(XD_KICK, &bufn, 2);
+	}
 }
 
 // Wrapper for COM_AddCommand commands
-static void COM_Lua_f(void)
+void COM_Lua_f(void)
 {
 	char *buf, *p;
 	UINT8 i, flags;
@@ -90,9 +101,13 @@ static void COM_Lua_f(void)
 	lua_getfield(gL, LUA_REGISTRYINDEX, "COM_Command"); // push COM_Command
 	I_Assert(lua_istable(gL, -1));
 
-	lua_getfield(gL, -1, COM_Argv(0)); // push command info table
+	// use buf temporarily -- must use lowercased string
+	buf = Z_StrDup(COM_Argv(0));
+	strlwr(buf);
+	lua_getfield(gL, -1, buf); // push command info table
 	I_Assert(lua_istable(gL, -1));
 	lua_remove(gL, -2); // pop COM_Command
+	Z_Free(buf);
 
 	lua_rawgeti(gL, -1, 2); // push flags from command info table
 	if (lua_isboolean(gL, -1))
@@ -158,8 +173,13 @@ static void COM_Lua_f(void)
 // Wrapper for COM_AddCommand
 static int lib_comAddCommand(lua_State *L)
 {
-	boolean exists = false;
-	const char *name = luaL_checkstring(L, 1);
+	int com_return = -1;
+	const char *luaname = luaL_checkstring(L, 1);
+
+	// must store in all lowercase
+	char *name = Z_StrDup(luaname);
+	strlwr(name);
+
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 	NOHUD
 	if (lua_gettop(L) >= 3)
@@ -177,11 +197,6 @@ static int lib_comAddCommand(lua_State *L)
 	lua_getfield(L, LUA_REGISTRYINDEX, "COM_Command");
 	I_Assert(lua_istable(L, -1));
 
-	lua_getfield(L, -1, name);
-	if (!lua_isnil(L, -1))
-		exists = true;
-	lua_pop(L, 1);
-
 	lua_createtable(L, 2, 0);
 		lua_pushvalue(L, 2);
 		lua_rawseti(L, -2, 1);
@@ -190,14 +205,23 @@ static int lib_comAddCommand(lua_State *L)
 		lua_rawseti(L, -2, 2);
 	lua_setfield(L, -2, name);
 
-	// This makes it only add a new command if another
-	// Lua command by the same name doesn't already exist.
-	//
-	// UNFORTUNATELY COM_AddCommand will still cause I_Errors
-	// if you attempt to override an existing hardcoded command.
-	//
-	if (!exists)
-		COM_AddCommand(name, COM_Lua_f);
+	// Try to add the Lua command
+	com_return = COM_AddLuaCommand(name);
+
+	if (com_return < 0)
+	{ // failed to add -- free the lowercased name and return error
+		Z_Free(name);
+		return luaL_error(L, "Couldn't add a new console command \"%s\"", luaname);
+	}
+	else if (com_return == 1)
+	{ // command existed already -- free our name as the old string will continue to be used
+		CONS_Printf("Replaced command \"%s\"\n", name);
+		Z_Free(name);
+	}
+	else
+	{ // new command was added -- do NOT free the string as it will forever be used by the console
+		CONS_Printf("Added command \"%s\"\n", name);
+	}
 	return 0;
 }
 

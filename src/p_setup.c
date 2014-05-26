@@ -2325,7 +2325,7 @@ boolean P_SetupLevel(boolean skipprecip)
 
 	if (cv_runscripts.value && mapheaderinfo[gamemap-1]->scriptname[0] != '#')
 	{
-		if (!mapheaderinfo[gamemap-1]->levelflags & LF_SCRIPTISFILE)
+		if (!(mapheaderinfo[gamemap-1]->levelflags & LF_SCRIPTISFILE))
 		{
 			lumpnum_t lumpnum;
 			char newname[9];
@@ -2435,10 +2435,7 @@ noscript:
 	{
 		F_WipeStartScreen();
 		V_DrawFill(0, 0, BASEVIDWIDTH, BASEVIDHEIGHT, 31);
-#ifdef HWRENDER
-		if(rendermode != render_soft)
-			HWR_PrepFadeToBlack();
-#endif
+
 		F_WipeEndScreen();
 		F_RunWipe(wipedefs[wipe_level_toblack], false);
 

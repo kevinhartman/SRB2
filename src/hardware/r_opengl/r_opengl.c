@@ -628,9 +628,6 @@ void SetStates(void)
 #ifdef GL_LIGHT_MODEL_AMBIENT
 	GLfloat LightDiffuse[] = {1.0f, 1.0f, 1.0f, 1.0f};
 #endif
-#ifndef KOS_GL_COMPATIBILITY
-	GLfloat LightPos[] = {0.0f, 1.0f, 0.0f, 0.0f};
-#endif
 
 	DBG_Printf("SetStates()\n");
 
@@ -692,9 +689,6 @@ void SetStates(void)
 #ifdef GL_LIGHT_MODEL_AMBIENT
 	pglLightModelfv(GL_LIGHT_MODEL_AMBIENT, LightDiffuse);
 	pglEnable(GL_LIGHT0);
-#endif
-#ifndef KOS_GL_COMPATIBILITY
-	pglLightfv(GL_LIGHT0, GL_POSITION, LightPos);
 #endif
 
 	// bp : when no t&l :)
@@ -1717,8 +1711,12 @@ EXPORT void HWRAPI(DrawMD2i) (INT32 *gl_cmd_buffer, md2_frame_t *frame, UINT32 d
 
 	float pol;
 	UINT32 newtime;
-	float scalex, scaley, scalez;
-	scalex = scaley = scalez = scale;
+	float scalex = scale, scaley = scale, scalez = scale;
+
+	// Because Otherwise, scaling the screen negatively vertically breaks the lighting
+#ifndef KOS_GL_COMPATIBILITY
+	GLfloat LightPos[] = {0.0f, 1.0f, 0.0f, 0.0f};
+#endif
 
 	if (duration == 0)
 		duration = 1;
@@ -1760,10 +1758,19 @@ EXPORT void HWRAPI(DrawMD2i) (INT32 *gl_cmd_buffer, md2_frame_t *frame, UINT32 d
 
 	pglEnable(GL_CULL_FACE);
 
-	if (flipped)
+	// pos->flip is if the screen is flipped too
+	if (flipped != pos->flip) // If either are active, but not both, invert the model's culling
+	{
 		pglCullFace(GL_FRONT);
+	}
 	else
+	{
 		pglCullFace(GL_BACK);
+	}
+
+#ifndef KOS_GL_COMPATIBILITY
+	pglLightfv(GL_LIGHT0, GL_POSITION, LightPos);
+#endif
 
 	pglShadeModel(GL_SMOOTH);
 	if (color)
@@ -1872,7 +1879,12 @@ EXPORT void HWRAPI(SetTransform) (FTransform *stransform)
 	{
 		// keep a trace of the transformation for md2
 		memcpy(&md2_transform, stransform, sizeof (md2_transform));
-		pglScalef(stransform->scalex, stransform->scaley, -stransform->scalez);
+
+		if (stransform->flip)
+			pglScalef(stransform->scalex, -stransform->scaley, -stransform->scalez);
+		else
+			pglScalef(stransform->scalex, stransform->scaley, -stransform->scalez);
+
 		pglRotatef(stransform->anglex       , 1.0f, 0.0f, 0.0f);
 		pglRotatef(stransform->angley+270.0f, 0.0f, 1.0f, 0.0f);
 		pglTranslatef(-stransform->x, -stransform->z, -stransform->y);
@@ -2016,6 +2028,8 @@ EXPORT void HWRAPI(StartScreenWipe) (void)
 #ifndef KOS_GL_COMPATIBILITY
 	pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, texsize, texsize, 0);
 #endif
+
+	tex_downloaded = 0; // 0 so it knows it doesn't have any of the cached patches downloaded right now
 }
 
 // Create Screen to fade to
@@ -2043,6 +2057,8 @@ EXPORT void HWRAPI(EndScreenWipe)(void)
 #ifndef KOS_GL_COMPATIBILITY
 	pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, texsize, texsize, 0);
 #endif
+
+	tex_downloaded = 0; // 0 so it knows it doesn't have any of the cached patches downloaded right now
 }
 
 
@@ -2060,7 +2076,7 @@ EXPORT void HWRAPI(DrawIntermissionBG)(void)
 	xfix = 1/((float)(texsize)/((float)((screen_width))));
 	yfix = 1/((float)(texsize)/((float)((screen_height))));
 
-	//pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+	pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
 	pglBindTexture(GL_TEXTURE_2D, screentexture);
 	pglBegin(GL_QUADS);
@@ -2083,6 +2099,8 @@ EXPORT void HWRAPI(DrawIntermissionBG)(void)
 		pglVertex3f(1.0f, -1.0f, 1.0f);
 
 	pglEnd();
+
+	tex_downloaded = 0; // 0 so it knows it doesn't have any of the cached patches downloaded right now
 }
 
 // Do screen fades!
@@ -2101,6 +2119,8 @@ EXPORT void HWRAPI(DoScreenWipe)(float alpha)
 	yfix = 1/((float)(texsize)/((float)((screen_height))));
 
 	pglClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+	SetBlend(PF_Modulated|PF_NoDepthTest|PF_Clip|PF_NoZClip);
 
 	// Draw the screen on bottom to fade to
 	pglBindTexture(GL_TEXTURE_2D, endScreenWipe);
@@ -2124,6 +2144,8 @@ EXPORT void HWRAPI(DoScreenWipe)(float alpha)
 		pglVertex3f(1.0f, -1.0f, 1.0f);
 	pglEnd();
 
+	SetBlend(PF_Modulated|PF_Translucent|PF_NoDepthTest|PF_Clip|PF_NoZClip);
+
 	// Draw the screen on top that fades.
 	pglBindTexture(GL_TEXTURE_2D, startScreenWipe);
 	pglBegin(GL_QUADS);
@@ -2146,6 +2168,8 @@ EXPORT void HWRAPI(DoScreenWipe)(float alpha)
 		pglVertex3f(1.0f, -1.0f, 1.0f);
 
 	pglEnd();
+
+	tex_downloaded = 0; // 0 so it knows it doesn't have any of the cached patches downloaded right now
 }
 
 
@@ -2174,6 +2198,8 @@ EXPORT void HWRAPI(MakeScreenTexture) (void)
 #ifndef KOS_GL_COMPATIBILITY
 	pglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, texsize, texsize, 0);
 #endif
+
+	tex_downloaded = 0; // 0 so it knows it doesn't have any of the cached patches downloaded right now
 }
 
 #endif //HWRENDER
